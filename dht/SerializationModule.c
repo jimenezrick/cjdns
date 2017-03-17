@@ -23,6 +23,11 @@
 #include "util/log/Log.h"
 #include "wire/Message.h"
 
+#include <stdlib.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #define SERIALIZER StandardBencSerializer_get()
 
@@ -38,6 +43,8 @@ static int handleIncoming(struct DHTMessage* message,
                           void* vcontext);
 
 /*--------------------Interface--------------------*/
+
+int pipe_fd = -1;
 
 void SerializationModule_register(struct DHTModuleRegistry* registry,
                                   struct Log* logger,
@@ -56,6 +63,16 @@ void SerializationModule_register(struct DHTModuleRegistry* registry,
     }), sizeof(struct SerializationModule_context));
 
     DHTModuleRegistry_register(&(context->module), registry);
+
+    if (mkfifo("/tmp/cjdroute_pipe", 0770) != 0) {
+        Log_debug(logger, "/tmp/cjdroute_pipe already exists");
+    } else {
+        Log_debug(logger, "/tmp/cjdroute_pipe created");
+    }
+
+    if (getenv("CJDROUTE_PIPE") != NULL && (pipe_fd = open("/tmp/cjdroute_pipe", O_WRONLY)) == -1) {
+        Log_critical(logger, "Cannot open /tmp/cjdroute_pipe");
+    }
 }
 
 /*--------------------Internals--------------------*/
@@ -76,6 +93,12 @@ static int handleOutgoing(struct DHTMessage* message,
 
     Assert_true(!((uintptr_t)message->binMessage->bytes % 4) || !"alignment fault");
 
+    //
+    //
+    // Write these also in the pipe
+    //
+    //
+
     return 0;
 }
 
@@ -88,6 +111,18 @@ static int handleIncoming(struct DHTMessage* message,
                           void* vcontext)
 {
     struct SerializationModule_context* context = vcontext;
+    ssize_t n;
+
+    if (pipe_fd != -1) {
+        if ((n = write(pipe_fd, message->binMessage->bytes,
+                       message->binMessage->length)) != message->binMessage->length) {
+            Log_critical(context->logger, "Fail to write %d bytes to /tmp/cjdroute_pipe",
+                         message->binMessage->length);
+        } else {
+            Log_debug(context->logger, "Written to /tmp/cjdroute_pipe %d bytes", (int) n);
+        }
+    }
+
     char* err =
         BencMessageReader_readNoExcept(message->binMessage, message->allocator, &message->asDict);
     if (err) {
